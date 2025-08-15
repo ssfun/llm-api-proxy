@@ -12,6 +12,8 @@
 
 无论您是希望保护 API 密钥、简化客户端配置、还是确保复杂推理任务不中断，`LLM API Proxy` 都能提供卓越的解决方案。
 
+![项目主页](https://github.com/ssfun/llm-api-proxy/blob/main/Preview.png?raw=true)
+
 ## ✨ 核心特性
 
   * **🛡️ 极致的隐私保护**
