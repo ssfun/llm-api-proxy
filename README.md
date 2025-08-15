@@ -160,7 +160,7 @@ ws.onmessage = (event) => {
 
 - [@XyzenSun](https://github.com/XyzenSun/SpectreProxy) 的 SpectreProxy 项目，本项目基于此高度定制
 
-- [@kev1npros](https://linux.do/t/topic/861821) [@Shikha](https://linux.do/t/topic/864744) 的 Gemini 防截断方案
+- [@kev1npros](https://linux.do/t/topic/861821) 、 [@Shikha](https://linux.do/t/topic/864744) 的 Gemini 防截断方案
 
 ## 🤝 贡献
 
