@@ -149,12 +149,153 @@ function getEnv(key: string, defaultValue?: string): string | undefined {
 }
 
 const BUILTIN_PROXIES: Record<string, any> = {
-  azure: { host: "models.inference.ai.azure.com", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT"] },
-  claude: { host: "api.anthropic.com", defaultHeaders: { "anthropic-version": "2023-06-01" }, retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] },
-  openai: { host: "api.openai.com", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"], timeout: 120000, maxResponseSize: 10485760 },
-  groq: { host: "api.groq.com", basePath: "openai", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]},
-  gemini: { host: "generativelanguage.googleapis.com", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]},
-  httpbin: { host: "httpbin.org", retryable: true }
+  azure: { 
+    host: "models.inference.ai.azure.com",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT"]
+  },
+  cerebras: { 
+    host: "api.cerebras.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  chutes: { 
+    host: "llm.chutes.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  claude: { 
+    host: "api.anthropic.com",
+    defaultHeaders: {
+      "anthropic-version": "2023-06-01"
+    },
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  cohere: { 
+    host: "api.cohere.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  discord: { 
+    host: "discord.com", 
+    basePath: "api" 
+  },
+  dmxcn: { 
+    host: "www.dmxapi.cn" 
+  },
+  dmxcom: { 
+    host: "www.dmxapi.com" 
+  },
+  fireworks: { 
+    host: "api.fireworks.ai", 
+    basePath: "inference",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  friendli: { 
+    host: "api.friendli.ai", 
+    basePath: "serverless",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  gemini: { 
+    host: "generativelanguage.googleapis.com",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  github: { 
+    host: "models.github.ai",
+    defaultHeaders: {
+      "Accept": "application/vnd.github+json"
+    },
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  gmi: { 
+    host: "api.gmi-serving.com",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  groq: { 
+    host: "api.groq.com", 
+    basePath: "openai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  huggingface: { 
+    host: "api-inference.huggingface.co",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  meta: { 
+    host: "www.meta.ai", 
+    basePath: "api",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  modelscope: { 
+    host: "api-inference.modelscope.cn",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  novita: { 
+    host: "api.novita.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  openai: { 
+    host: "api.openai.com",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"],
+    timeout: 120000,
+    maxResponseSize: 10485760
+  },
+  openrouter: { 
+    host: "openrouter.ai", 
+    basePath: "api",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  poe: { 
+    host: "api.poe.com",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  portkey: { 
+    host: "api.portkey.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  siliconflow: { 
+    host: "api.siliconflow.cn",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  targon: { 
+    host: "api.targon.com",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  telegram: { 
+    host: "api.telegram.org",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
+  },
+  together: { 
+    host: "api.together.xyz",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  xai: { 
+    host: "api.x.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
+  httpbin: { 
+    host: "httpbin.org",
+    retryable: true 
+  },
 };
 
 function loadProxyConfig() {
