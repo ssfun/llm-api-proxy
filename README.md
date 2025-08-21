@@ -32,7 +32,7 @@
       * 默认采用 **Socket 优先**策略，在追求极致隐私的同时，当遇到不兼容的网络环境时，会自动无缝回退到 `Fetch` 策略，兼顾隐私与可用性。
       * 支持为特定 API 端点（如 OpenAI, Claude 等使用 Cloudflare 网络，不支持 TCP Socket 连接的 API 服务商）强制配置 `Fetch` 策略，以获得最佳兼容性。
       * API 端点支持以数组的形式配置多个上游 targets ，实现随机调用。
-      * 建议为 OpenAI, Claude 等使用 Cloudflare 网络的 API 服务商单独部署 [Supabase API 网关(待补充)](https://github.com/ssfun)，实现更好的隐私保护。
+      * 建议为 OpenAI, Claude 等使用 Cloudflare 网络的 API 服务商指向单独部署的 [Supabase API 网关](https://github.com/ssfun/llm-api-proxy/blob/main/supabase.ts)，实现更好的隐私保护。
 
   * **🚀 灵活的路由模式**
 
