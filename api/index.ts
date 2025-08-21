@@ -12,7 +12,8 @@ export default async function handler(req: Request) {
   const startTime = performance.now();
   const reqId = getRequestId(req.headers);
   const { method } = req;
-  const { pathname, search } = new URL(req.url);
+  const originalUrl = new URL(req.url);
+  const { pathname, searchParams } = originalUrl; // 使用 searchParams 以便过滤
 
   logInfo("Incoming request", { reqId, method, path: pathname, ip: req.headers.get("x-forwarded-for") || "unknown" });
 
@@ -20,8 +21,6 @@ export default async function handler(req: Request) {
     return new Response(null, { status: 204, headers: createCorsHeaders() });
   }
 
-  // 从路径中移除 vercel.json 中配置的前缀（如果有）
-  // 例如，如果路径是 /gateway/openai/v1，移除 /gateway
   const cleanedPathname = pathname.startsWith('/gateway') ? pathname.replace('/gateway', '') : pathname;
   
   const segments = cleanedPathname.split("/").filter(Boolean);
@@ -36,9 +35,20 @@ export default async function handler(req: Request) {
     logWarn("Service not found", { reqId, service: serviceAlias });
     return createErrorResponse(404, `Service '${serviceAlias}' not found`, reqId, { availableServices: Object.keys(PROXIES) });
   }
+  
+  // 创建一个安全的查询参数白名单，防止转发未知或有害的参数
+  const newSearchParams = new URLSearchParams();
+  // 只允许转发 'key' 参数，这是 Gemini API 等服务需要的
+  if (searchParams.has('key')) {
+      newSearchParams.set('key', searchParams.get('key')!);
+  }
+  // 如果未来需要其他参数，可在此处添加
+  // if (searchParams.has('another_safe_param')) { ... }
+  const finalSearch = newSearchParams.toString() ? `?${newSearchParams.toString()}` : '';
+
 
   const userPath = sanitizePath(pathSegments);
-  const upstreamURL = buildUpstreamURL(proxy.host, proxy.basePath, userPath, search);
+  const upstreamURL = buildUpstreamURL(proxy.host, proxy.basePath, userPath, finalSearch); // 使用过滤后的 finalSearch
   logDebug("Routing request", { reqId, service: serviceAlias, upstream: upstreamURL });
 
   const forwardHeaders = buildForwardHeaders(req.headers, proxy);
@@ -134,160 +144,17 @@ const logError = (msg: string, ctx?: Record<string, any>)=>log("ERROR", msg, ctx
 // * 模块: config.ts
 // *─────────────────────────────────────────────────────────────────────────────*
 
-// Helper to get environment variables in Vercel
 function getEnv(key: string, defaultValue?: string): string | undefined {
-  // Vercel uses process.env
   return (globalThis as any).process?.env[key] ?? defaultValue;
 }
 
 const BUILTIN_PROXIES: Record<string, any> = {
-  azure: { 
-    host: "models.inference.ai.azure.com",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT"]
-  },
-  cerebras: { 
-    host: "api.cerebras.ai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  chutes: { 
-    host: "llm.chutes.ai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  claude: { 
-    host: "api.anthropic.com",
-    defaultHeaders: {
-      "anthropic-version": "2023-06-01"
-    },
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  cohere: { 
-    host: "api.cohere.ai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  discord: { 
-    host: "discord.com", 
-    basePath: "api" 
-  },
-  dmxcn: { 
-    host: "www.dmxapi.cn" 
-  },
-  dmxcom: { 
-    host: "www.dmxapi.com" 
-  },
-  fireworks: { 
-    host: "api.fireworks.ai", 
-    basePath: "inference",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  friendli: { 
-    host: "api.friendli.ai", 
-    basePath: "serverless",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  gemini: { 
-    host: "generativelanguage.googleapis.com",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  github: { 
-    host: "models.github.ai",
-    defaultHeaders: {
-      "Accept": "application/vnd.github+json"
-    },
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  gmi: { 
-    host: "api.gmi-serving.com",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  groq: { 
-    host: "api.groq.com", 
-    basePath: "openai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  huggingface: { 
-    host: "api-inference.huggingface.co",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  meta: { 
-    host: "www.meta.ai", 
-    basePath: "api",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  modelscope: { 
-    host: "api-inference.modelscope.cn",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  novita: { 
-    host: "api.novita.ai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  openai: { 
-    host: "api.openai.com",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"],
-    timeout: 120000,
-    maxResponseSize: 10485760
-  },
-  openrouter: { 
-    host: "openrouter.ai", 
-    basePath: "api",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  poe: { 
-    host: "api.poe.com",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  portkey: { 
-    host: "api.portkey.ai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  siliconflow: { 
-    host: "api.siliconflow.cn",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  targon: { 
-    host: "api.targon.com",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  telegram: { 
-    host: "api.telegram.org",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] 
-  },
-  together: { 
-    host: "api.together.xyz",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  xai: { 
-    host: "api.x.ai",
-    retryable: true,
-    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
-  },
-  httpbin: { 
-    host: "httpbin.org",
-    retryable: true 
-  },
+  azure: { host: "models.inference.ai.azure.com", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT"] },
+  claude: { host: "api.anthropic.com", defaultHeaders: { "anthropic-version": "2023-06-01" }, retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"] },
+  openai: { host: "api.openai.com", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"], timeout: 120000, maxResponseSize: 10485760 },
+  groq: { host: "api.groq.com", basePath: "openai", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]},
+  gemini: { host: "generativelanguage.googleapis.com", retryable: true, retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]},
+  httpbin: { host: "httpbin.org", retryable: true }
 };
 
 function loadProxyConfig() {
@@ -386,7 +253,7 @@ function createSizeLimitedStream(maxSize: number, reqId: string) {
 // * 模块: index.ts (主逻辑 - 辅助函数)
 // *─────────────────────────────────────────────────────────────────────────────*
 const PROXIES = loadProxyConfig();
-const ALLOWED_REQ_HEADERS = new Set(["content-type", "content-length", "accept", "authorization", "x-api-key", "anthropic-version"]);
+const ALLOWED_REQ_HEADERS = new Set(["content-type", "content-length", "accept", "authorization", "x-api-key", "anthropic-version", "user-agent"]);
 const BLACKLISTED_HEADERS = new Set(["host", "connection", "cf-connecting-ip", "x-forwarded-for", "cookie"]);
 const CORS_ALLOWED_HEADERS = "Content-Type, Authorization, X-Requested-With, anthropic-version";
 const CORS_EXPOSED_HEADERS = "Content-Type, Content-Length, X-Request-Id";
@@ -394,7 +261,7 @@ const CORS_EXPOSED_HEADERS = "Content-Type, Content-Length, X-Request-Id";
 function createCorsHeaders() {
   const headers = new Headers();
   headers.set("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD");
   headers.set("Access-Control-Allow-Headers", CORS_ALLOWED_HEADERS);
   headers.set("Access-Control-Expose-Headers", CORS_EXPOSED_HEADERS);
   headers.set("Access-Control-Max-Age", "86400");
@@ -419,7 +286,7 @@ function buildForwardHeaders(clientHeaders: Headers, proxy: any) {
     }
   }
   if (!headers.has("user-agent")) {
-    headers.set("User-Agent", "Vercel Edge Proxy");
+    headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
   }
   headers.delete("accept-encoding");
   return headers;
