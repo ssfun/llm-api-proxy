@@ -408,6 +408,11 @@ const BUILTIN_PROXIES: Record<string, any> = {
     retryable: true,
     retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
   },
+  pplx: { 
+    host: "api.perplexity.ai",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
   siliconflow: { 
     host: "api.siliconflow.cn",
     retryable: true,
