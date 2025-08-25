@@ -442,6 +442,11 @@ const BUILTIN_PROXIES: Record<string, any> = {
     host: "httpbin.org",
     retryable: true 
   },
+  chataw: { 
+    host: "api.chatanywhere.tech",
+    retryable: true,
+    retryableMethods: ["GET", "HEAD", "OPTIONS", "POST"]
+  },
 };
 
 /**
