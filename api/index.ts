@@ -75,8 +75,8 @@ export default async function handler(req: Request) {
   // 直接从原始请求中复制所有查询参数，不再使用严格的白名单
   const newSearchParams = new URLSearchParams(searchParams);
 
-  // 如果未来确实需要移除某些内部参数，可以在这里操作
-  // newSearchParams.delete('some_internal_param_to_remove');
+  // 在转发前，主动删除由客户端错误添加的 'path' 参数
+  newSearchParams.delete('path');
   
   const finalSearch = newSearchParams.toString() ? `?${newSearchParams.toString()}` : '';
 
