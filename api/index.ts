@@ -79,7 +79,9 @@ export default async function handler(req: Request) {
       newSearchParams.set('key', searchParams.get('key')!);
   }
   // 如果未来需要其他参数，可在此处添加
-  // if (searchParams.has('another_safe_param')) { ... }
+  if (searchParams.has('alt')) {
+      newSearchParams.set('alt', searchParams.get('alt')!);
+  }
   const finalSearch = newSearchParams.toString() ? `?${newSearchParams.toString()}` : '';
 
   // 构建用户路径和上游 URL
