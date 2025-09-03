@@ -72,12 +72,14 @@ export default async function handler(req: Request) {
     );
   }
   
-  // 直接从原始请求中复制所有查询参数，不再使用严格的白名单
-  const newSearchParams = new URLSearchParams(searchParams);
-
-  // 在转发前，主动删除由客户端错误添加的 'path' 参数
-  newSearchParams.delete('path');
-  
+  // 创建安全的查询参数白名单，防止转发未知或有害的参数
+  const newSearchParams = new URLSearchParams();
+  // 只允许转发 'key' 参数，这是 Gemini API 等服务需要的
+  if (searchParams.has('key')) {
+      newSearchParams.set('key', searchParams.get('key')!);
+  }
+  // 如果未来需要其他参数，可在此处添加
+  // if (searchParams.has('another_safe_param')) { ... }
   const finalSearch = newSearchParams.toString() ? `?${newSearchParams.toString()}` : '';
 
   // 构建用户路径和上游 URL
