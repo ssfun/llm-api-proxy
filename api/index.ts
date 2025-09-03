@@ -510,8 +510,9 @@ function sanitizePath(parts: string[]): string {
   return parts
     .filter((seg) => seg && seg !== "." && seg !== "..")
     .map((seg) => {
+      // 内部的 split/join 结构略显复杂，可以简化，但为了最小改动，我们只修正核心问题
       return seg.split('/')
-        .map((s) => encodeURIComponent(s).replace(/%3A/gi, ':'))
+        .map((s) => encodeURIComponent(s)) // 只进行标准的 URL 编码
         .join('/');
     })
     .join('/');
