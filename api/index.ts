@@ -74,14 +74,16 @@ export default async function handler(req: Request) {
   
   // 创建安全的查询参数白名单，防止转发未知或有害的参数
   const newSearchParams = new URLSearchParams();
-  // 只允许转发 'key' 参数，这是 Gemini API 等服务需要的
+  // 允许转发 'alt' 参数，这是 Gemini API 流式请求需要的
+  if (searchParams.has('alt')) {
+      newSearchParams.set('alt', searchParams.get('alt')!);
+  }
+  // 允许转发 'key' 参数，这是 Gemini API 等服务需要的
   if (searchParams.has('key')) {
       newSearchParams.set('key', searchParams.get('key')!);
   }
   // 如果未来需要其他参数，可在此处添加
-  if (searchParams.has('alt')) {
-      newSearchParams.set('alt', searchParams.get('alt')!);
-  }
+  // if (searchParams.has('other_params')) { newSearchParams.set('other_params', searchParams.get('other_params')!);}
   const finalSearch = newSearchParams.toString() ? `?${newSearchParams.toString()}` : '';
 
   // 构建用户路径和上游 URL
