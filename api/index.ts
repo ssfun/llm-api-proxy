@@ -72,14 +72,12 @@ export default async function handler(req: Request) {
     );
   }
   
-  // 创建安全的查询参数白名单，防止转发未知或有害的参数
-  const newSearchParams = new URLSearchParams();
-  // 只允许转发 'key' 参数，这是 Gemini API 等服务需要的
-  if (searchParams.has('key')) {
-      newSearchParams.set('key', searchParams.get('key')!);
-  }
-  // 如果未来需要其他参数，可在此处添加
-  // if (searchParams.has('another_safe_param')) { ... }
+  // 直接从原始请求中复制所有查询参数，不再使用严格的白名单
+  const newSearchParams = new URLSearchParams(searchParams);
+
+  // 如果未来确实需要移除某些内部参数，可以在这里操作
+  // newSearchParams.delete('some_internal_param_to_remove');
+  
   const finalSearch = newSearchParams.toString() ? `?${newSearchParams.toString()}` : '';
 
   // 构建用户路径和上游 URL
@@ -510,9 +508,8 @@ function sanitizePath(parts: string[]): string {
   return parts
     .filter((seg) => seg && seg !== "." && seg !== "..")
     .map((seg) => {
-      // 内部的 split/join 结构略显复杂，可以简化，但为了最小改动，我们只修正核心问题
       return seg.split('/')
-        .map((s) => encodeURIComponent(s)) // 只进行标准的 URL 编码
+        .map((s) => encodeURIComponent(s).replace(/%3A/gi, ':'))
         .join('/');
     })
     .join('/');
