@@ -703,7 +703,8 @@ const ALLOWED_REQ_HEADERS = new Set([
   "content-length", 
   "accept", 
   "authorization", 
-  "x-api-key", 
+  "x-api-key",
+  "x-goog-api-key",
   "anthropic-version", 
   "user-agent"
 ]);
