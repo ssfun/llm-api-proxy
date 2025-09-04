@@ -352,7 +352,7 @@ function createSizeLimitedStream(maxSize, reqId, onSizeExceeded) {
 
 //* --- 常量 -----------------------------------------------------------------*//
 const PROXIES = loadProxyConfig();
-const ALLOWED_REQ_HEADERS = new Set(["content-type", "content-length", "accept", "accept-language", "authorization", "x-api-key", "anthropic-version", "anthropic-beta", "openai-organization", "openai-beta", "user-agent", "x-stainless-lang", "x-stainless-package-version", "x-stainless-os", "x-stainless-arch", "x-stainless-runtime", "x-stainless-runtime-version"]);
+const ALLOWED_REQ_HEADERS = new Set(["content-type", "content-length", "accept", "accept-language", "authorization", "x-api-key", "x-goog-api-key", "anthropic-version", "anthropic-beta", "openai-organization", "openai-beta", "user-agent", "x-stainless-lang", "x-stainless-package-version", "x-stainless-os", "x-stainless-arch", "x-stainless-runtime", "x-stainless-runtime-version"]);
 const BLACKLISTED_HEADERS = new Set(["host", "connection", "upgrade", "cf-connecting-ip", "cf-ipcountry", "cf-ray", "cf-visitor", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "cookie", "set-cookie"]);
 const CORS_ALLOWED_HEADERS = "Content-Type, Authorization, X-Requested-With, anthropic-version, anthropic-beta, x-api-key, openai-beta";
 const CORS_EXPOSED_HEADERS = "Content-Type, Content-Length, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Request-Id";
