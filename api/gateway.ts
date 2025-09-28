@@ -22,9 +22,10 @@ import {
   SizeLimitExceededError,
 } from "./config";
 
-const EDGE_HARD_TIMEOUT = 23000;
-const EDGE_MAX_BODY = MAX_RESPONSE_SIZE;
-const RETRY_HTTP_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
+const EDGE_FIRST_BYTE_DEADLINE = 23_000;
+const EDGE_RESPONSE_LIMIT = MAX_RESPONSE_SIZE;
+const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
+const BACKGROUND_PATH = "/background";
 
 interface ParsedRoute {
   service: string;
@@ -40,8 +41,7 @@ function ensureAbsoluteURL(req: Request, headers: Headers) {
   }
   const host = headers.get("host") ?? "localhost";
   const proto = headers.get("x-forwarded-proto") ?? "https";
-  const base = `${proto}://${host}`;
-  return new URL(req.url.startsWith("/") ? req.url : `/${req.url}`, base);
+  return new URL(req.url.startsWith("/") ? req.url : `/${req.url}`, `${proto}://${host}`);
 }
 
 function parseRoute(req: Request, headers: Headers): ParsedRoute | null {
@@ -63,7 +63,7 @@ function parseRoute(req: Request, headers: Headers): ParsedRoute | null {
       userPath: normalizedPath,
       search: cleaned.toString() ? `?${cleaned.toString()}` : "",
       url,
-      originalPath: `/gateway/${serviceParam}/${normalizedPath}`,
+      originalPath: `/gateway/${serviceParam}${normalizedPath ? `/${normalizedPath}` : ""}`,
     };
   }
 
@@ -75,6 +75,7 @@ function parseRoute(req: Request, headers: Headers): ParsedRoute | null {
 
   const service = segments[1];
   const userPath = sanitizePath(segments.slice(2));
+
   return {
     service,
     userPath,
@@ -95,8 +96,7 @@ async function detectStreamIntent(req: Request, headers: Headers) {
   }
 
   try {
-    const cloned = req.clone();
-    const parsed = await cloned.json();
+    const parsed = await req.clone().json();
     return isStreamRequested(headers, parsed);
   } catch {
     return isStreamRequested(headers);
@@ -105,7 +105,8 @@ async function detectStreamIntent(req: Request, headers: Headers) {
 
 function resolveEdgeTimeout(service: string) {
   const proxy = PROXIES[service];
-  return Math.min(proxy?.timeout ?? DEFAULT_TIMEOUT, EDGE_HARD_TIMEOUT);
+  const specified = proxy?.timeout ?? DEFAULT_TIMEOUT;
+  return Math.min(specified, EDGE_FIRST_BYTE_DEADLINE);
 }
 
 function buildBackgroundHeaders(source: Headers, extras: Record<string, string>, hasBody: boolean) {
@@ -119,6 +120,7 @@ function buildBackgroundHeaders(source: Headers, extras: Record<string, string>,
     "x-api-key",
     "x-goog-api-key",
   ]);
+
   const headers = new Headers();
   for (const [key, value] of source.entries()) {
     const lower = key.toLowerCase();
@@ -126,14 +128,17 @@ function buildBackgroundHeaders(source: Headers, extras: Record<string, string>,
       headers.set(key, value);
     }
   }
+
   Object.entries(extras).forEach(([k, v]) => headers.set(k, v));
   if (!hasBody) headers.delete("content-length");
+  headers.set("cache-control", "no-store");
   return headers;
 }
 
-function limitStream(stream: ReadableStream<Uint8Array>, limit: number, reqId: string) {
+function limitStreamSize(stream: ReadableStream<Uint8Array>, limit: number, reqId: string) {
   const reader = stream.getReader();
   let total = 0;
+
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       const { done, value } = await reader.read();
@@ -156,10 +161,15 @@ function limitStream(stream: ReadableStream<Uint8Array>, limit: number, reqId: s
   });
 }
 
-async function forwardViaEdge(req: Request, ctx: { service: string; userPath: string; search: string; reqId: string; headers: Headers; streaming: boolean }) {
+async function forwardViaEdge(
+  req: Request,
+  ctx: { service: string; userPath: string; search: string; reqId: string; headers: Headers; streaming: boolean }
+) {
   const { service, userPath, search, reqId, headers, streaming } = ctx;
   const proxy = PROXIES[service];
-  if (!proxy) return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+  if (!proxy) {
+    return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+  }
 
   const upstreamURL = buildUpstreamURL(proxy.host, proxy.basePath, userPath, search);
   const forwardHeaders = buildForwardHeaders(headers, proxy);
@@ -179,7 +189,7 @@ async function forwardViaEdge(req: Request, ctx: { service: string; userPath: st
       {
         retries: proxy.retryable ? 2 : 0,
         retryableMethods: proxy.retryableMethods ?? ["GET", "HEAD", "OPTIONS", "POST"],
-        retryStatusCodes: RETRY_HTTP_CODES,
+        retryStatusCodes: RETRY_STATUS_CODES,
         timeoutPerAttempt: timeout,
         baseDelay: 200,
         maxDelay: 1500,
@@ -189,28 +199,32 @@ async function forwardViaEdge(req: Request, ctx: { service: string; userPath: st
       }
     );
 
-    const limit = proxy.maxResponseSize ?? EDGE_MAX_BODY;
+    const limit = proxy.maxResponseSize ?? EDGE_RESPONSE_LIMIT;
     const contentLength = response.headers.get("content-length");
     if (contentLength && Number(contentLength) > limit) {
-      logWarn("响应 Content-Length 超限", { reqId, limit, contentLength, service });
+      logWarn("响应 Content-Length 超限", { reqId, service, limit, contentLength });
       return createErrorResponse(413, "响应体超过 Edge 允许的大小限制", reqId, {
         limit,
         content_length: Number(contentLength),
       });
     }
 
-    const processedHeaders = processResponseHeaders(response.headers, reqId);
-    processedHeaders.set("X-Upstream-Status", `${response.status}`);
+    const headersOut = processResponseHeaders(response.headers, reqId);
+    headersOut.set("X-Upstream-Status", `${response.status}`);
 
     if (!response.body) {
-      return new Response(null, { status: response.status, statusText: response.statusText, headers: processedHeaders });
+      return new Response(null, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headersOut,
+      });
     }
 
-    const stream = limitStream(response.body, limit, reqId);
-    return new Response(stream, {
+    const guardedStream = limitStreamSize(response.body, limit, reqId);
+    return new Response(guardedStream, {
       status: response.status,
       statusText: response.statusText,
-      headers: processedHeaders,
+      headers: headersOut,
     });
   } catch (err) {
     if (err instanceof SizeLimitExceededError) {
@@ -225,39 +239,56 @@ async function forwardViaEdge(req: Request, ctx: { service: string; userPath: st
   }
 }
 
-async function handoffToBackground(req: Request, ctx: { service: string; userPath: string; search: string; reqId: string; url: URL; headers: Headers }) {
+async function handoffToBackground(
+  req: Request,
+  ctx: { service: string; userPath: string; search: string; reqId: string; url: URL; headers: Headers }
+) {
   const { service, userPath, search, reqId, url, headers } = ctx;
-  const bodyBuffer = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+  const proxy = PROXIES[service];
+  if (!proxy) {
+    return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+  }
+
+  const bodyBuffer =
+    req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
   const hasBody = bodyBuffer !== undefined;
 
-  const relayHeaders = buildBackgroundHeaders(headers, {
-    "x-gateway-target-service": service,
-    "x-gateway-target-path": userPath,
-    "x-request-id": reqId,
-  }, hasBody);
+  const relayHeaders = buildBackgroundHeaders(
+    headers,
+    {
+      "x-gateway-target-service": service,
+      "x-gateway-target-path": userPath,
+      "x-request-id": reqId,
+    },
+    hasBody
+  );
 
   if (search) {
     relayHeaders.set("x-gateway-target-query", search.startsWith("?") ? search.slice(1) : search);
   }
   relayHeaders.set("x-gateway-dispatcher", "edge");
 
-  const backgroundUrl = new URL("/background", url.origin);
-  logInfo("Edge 分流至 Background", { reqId, service, target: backgroundUrl.toString() });
+  const backgroundURL = new URL(BACKGROUND_PATH, url.origin);
+  logInfo("Edge 分流至 Background", {
+    reqId,
+    service,
+    target: backgroundURL.toString(),
+  });
 
-  const response = await fetch(backgroundUrl.toString(), {
+  const response = await fetch(backgroundURL.toString(), {
     method: req.method,
     headers: relayHeaders,
-    body: hasBody ? new Uint8Array(bodyBuffer) : undefined,
+    body: hasBody ? new Uint8Array(bodyBuffer!) : undefined,
     cache: "no-store",
   });
 
-  const processedHeaders = processResponseHeaders(response.headers, reqId);
-  processedHeaders.set("X-Background-Proxy", "1");
+  const headersOut = processResponseHeaders(response.headers, reqId);
+  headersOut.set("X-Background-Proxy", "1");
 
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
-    headers: processedHeaders,
+    headers: headersOut,
   });
 }
 
@@ -271,7 +302,7 @@ export default async function handler(req: Request) {
 
   const route = parseRoute(req, incomingHeaders);
   if (!route) {
-    return createErrorResponse(400, "无效的 Gateway 路径", reqId);
+    return createErrorResponse(404, "未匹配到网关路径", reqId);
   }
 
   const { service, userPath, search, url, originalPath } = route;
@@ -288,32 +319,32 @@ export default async function handler(req: Request) {
   });
 
   const streaming = await detectStreamIntent(req, incomingHeaders);
-  const shouldStayOnEdge = streaming || req.method === "GET" || req.method === "HEAD";
+  const stayOnEdge = streaming;
 
   logDebug("分流决策", {
     reqId,
-    streaming,
     method: req.method,
-    stayOnEdge: shouldStayOnEdge,
+    streaming,
+    stayOnEdge,
   });
 
-  if (shouldStayOnEdge) {
-    return forwardViaEdge(req, {
+  if (!stayOnEdge) {
+    return handoffToBackground(req, {
       service,
       userPath,
       search,
       reqId,
+      url,
       headers: incomingHeaders,
-      streaming,
     });
   }
 
-  return handoffToBackground(req, {
+  return forwardViaEdge(req, {
     service,
     userPath,
     search,
     reqId,
-    url,
     headers: incomingHeaders,
+    streaming,
   });
 }
