@@ -84,6 +84,25 @@ function parseRoute(req: Request, headers: Headers): ParsedRoute | null {
   };
 }
 
+function isJsonLike(contentType: string | null) {
+  return !!contentType && contentType.toLowerCase().startsWith("application/json");
+}
+
+async function detectStreamIntent(req: Request, headers: Headers) {
+  const contentType = headers.get("content-type");
+  if (!isJsonLike(contentType)) {
+    return isStreamRequested(headers);
+  }
+
+  try {
+    const cloned = req.clone();
+    const parsed = await cloned.json();
+    return isStreamRequested(headers, parsed);
+  } catch {
+    return isStreamRequested(headers);
+  }
+}
+
 function resolveEdgeTimeout(service: string) {
   const proxy = PROXIES[service];
   return Math.min(proxy?.timeout ?? DEFAULT_TIMEOUT, EDGE_HARD_TIMEOUT);
