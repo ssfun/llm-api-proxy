@@ -1,179 +1,276 @@
+/**
+ * /api/gateway.ts
+ *
+ * @format
+ */
+
 import {
-  PROXIES,
-  ALLOWED_ORIGIN,
-  DEFAULT_TIMEOUT,
-  ENABLE_RETRY,
-  MAX_RESPONSE_SIZE,
-  DEFAULT_RETRY_METHODS
+    PROXIES,
+    DEFAULT_TIMEOUT,
+    MAX_RESPONSE_SIZE,
+    buildForwardHeaders,
+    buildUpstreamURL,
+    categorizeError,
+    createCorsHeaders,
+    createErrorResponse,
+    fetchWithRetry,
+    getRequestId,
+    isStreamRequested,
+    logDebug,
+    logError,
+    logInfo,
+    logWarn,
+    processResponseHeaders,
+    sanitizePath,
+    SizeLimitExceededError,
 } from "./config";
 
-export const config = { runtime: "edge" };
+export const config = {
+    runtime: "edge",
+};
 
-// ====================================
-export default async function handler(req: Request) {
-  const reqId = getRequestId(req.headers);
-  const url = new URL(req.url);
-  const { pathname, searchParams } = url;
+const EDGE_FIRST_BYTE_LIMIT = 23000; // < 25s
+const EDGE_MAX_RESPONSE_SIZE = MAX_RESPONSE_SIZE;
+const RETRY_HTTP_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
+const BACKGROUND_ENDPOINT = "/background";
 
-  // 处理 CORS
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: createCorsHeaders() });
-  }
+function resolveEffectiveTimeout(proxyKey: string) {
+    const proxy = PROXIES[proxyKey];
+    const specific = proxy?.timeout ?? DEFAULT_TIMEOUT;
+    return Math.min(specific, EDGE_FIRST_BYTE_LIMIT);
+}
 
-  // 解析路径
-  const cleanedPath = pathname.startsWith("/gateway")
-    ? pathname.replace("/gateway", "")
-    : pathname;
-  const segments = cleanedPath.split("/").filter(Boolean);
-  if (segments.length < 2) {
-    return createErrorResponse(400, "无效路径", reqId, {
-      availableServices: Object.keys(PROXIES),
-    });
-  }
+function cloneAllowedHeaders(headers: Headers) {
+    const result = new Headers();
+    for (const [key, value] of headers.entries()) result.set(key, value);
+    return result;
+}
 
-  const [serviceAlias, ...rest] = segments;
-  const proxy = PROXIES[serviceAlias];
-  if (!proxy) {
-    return createErrorResponse(404, `服务 '${serviceAlias}' 未找到`, reqId, {
-      availableServices: Object.keys(PROXIES),
-    });
-  }
-
-  // === stream 判定 ===
-  let isStream = false;
-  if (req.method === "POST") {
+async function detectStreamIntent(req: Request) {
+    const contentType = req.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("application/json"))
+        return isStreamRequested(req);
     try {
-      const body = await req.clone().json();
-      if (body?.stream === true) isStream = true;
-    } catch {/* ignore */}
-  }
-
-  // === 非流式 → Background Function
-  if (!isStream) {
-    const backgroundUrl = new URL(`/api/background${cleanedPath}${url.search}`, url.origin).toString();
-    return fetch(backgroundUrl, { method: req.method, headers: req.headers, body: req.body });
-  }
-
-  // === 流式 → Edge 直传
-  const upstreamUrl = buildUpstreamURL(proxy.host, proxy.basePath, rest.join("/"), "");
-  const upstreamReq = new Request(upstreamUrl, {
-    method: req.method,
-    headers: buildForwardHeaders(req.headers, proxy),
-    body: req.body,
-  });
-  const upstreamResp = await fetchWithRetry(upstreamReq, {
-    maxRetries: ENABLE_RETRY ? proxy.maxRetries ?? 2 : 0,
-    retryableMethods: proxy.retryableMethods,
-    reqId,
-  });
-
-  return new Response(upstreamResp.body, {
-    status: upstreamResp.status,
-    headers: processResponseHeaders(upstreamResp.headers, reqId),
-  });
+        const parsed = await req.clone().json();
+        return isStreamRequested(req, parsed);
+    } catch {
+        return isStreamRequested(req);
+    }
 }
 
-// =================== 工具函数 ===================
+async function handoffToBackground(
+    req: Request,
+    ctx: { service: string; userPath: string; reqId: string; requestUrl: URL },
+) {
+    const { service, userPath, reqId, requestUrl } = ctx;
+    const query = requestUrl.search ? requestUrl.search.slice(1) : "";
+    const bodyBuffer =
+        req.method === "GET" || req.method === "HEAD"
+            ? undefined
+            : await req.arrayBuffer();
 
-function getRequestId(headers: Headers): string {
-  return headers.get("x-request-id") || headers.get("sb-request-id") || crypto.randomUUID();
-}
-function sanitizePath(parts: string[]): string {
-  return parts.filter(seg => seg !== "." && seg !== "..")
-              .map(seg => encodeURIComponent(seg).replace(/%3A/gi, ":"))
-              .join("/");
-}
-function buildUpstreamURL(host: string, basePath: string, userPath: string, search: string): string {
-  const cleanBase = basePath?.replace(/^\/|\/$/g, "") || "";
-  const cleanUser = userPath.replace(/^\/|\/$/g, "");
-  const full = [cleanBase, cleanUser].filter(Boolean).join("/");
-  return `https://${host}${full ? "/" + full : ""}${search}`;
+    const headers = cloneAllowedHeaders(req.headers);
+    headers.set("x-gateway-target-service", service);
+    headers.set("x-gateway-target-path", userPath);
+    headers.set("x-request-id", reqId);
+    if (query) headers.set("x-gateway-target-query", query);
+    headers.set("x-gateway-dispatcher", "edge");
+
+    const backgroundUrl = new URL(BACKGROUND_ENDPOINT, requestUrl.origin);
+    const response = await fetch(backgroundUrl.toString(), {
+        method: req.method,
+        headers,
+        body: bodyBuffer ? new Uint8Array(bodyBuffer) : undefined,
+    });
+
+    const processedHeaders = processResponseHeaders(response.headers, reqId);
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: processedHeaders,
+    });
 }
 
-// 错误分类
-function categorizeError(error: Error) {
-  const msg = error.message.toLowerCase();
-  if (error.name === "AbortError" || msg.includes("timeout")) return { type: "TIMEOUT", status: 504, message: "请求超时" };
-  if (msg.includes("network") || msg.includes("fetch failed")) return { type: "NETWORK", status: 502, message: "网络错误" };
-  if (msg.includes("dns")) return { type: "DNS", status: 502, message: "DNS解析失败" };
-  if (msg.includes("connection refused")) return { type: "CONNECTION", status: 503, message: "连接被拒绝" };
-  return { type: "UNKNOWN", status: 500, message: "未知错误: " + error.message };
+function enforceStreamLimit(
+    stream: ReadableStream<Uint8Array>,
+    limit: number,
+    reqId: string,
+) {
+    const reader = stream.getReader();
+    let total = 0;
+    return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+            const { done, value } = await reader.read();
+            if (done) {
+                controller.close();
+                return;
+            }
+            total += value.byteLength;
+            if (total > limit) {
+                controller.error(new SizeLimitExceededError(limit, total));
+                await reader.cancel();
+                logWarn("流式响应被截断", { reqId, total, limit });
+                return;
+            }
+            controller.enqueue(value);
+        },
+        async cancel(reason) {
+            await reader.cancel(reason);
+        },
+    });
 }
-async function fetchWithRetry(req: Request, cfg: { maxRetries: number, retryableMethods?: string[], reqId: string }) {
-  const { maxRetries, retryableMethods = DEFAULT_RETRY_METHODS } = cfg;
-  let lastErr: any;
-  for (let i = 0; i <= maxRetries; i++) {
+
+async function handleStreamRequest(
+    req: Request,
+    ctx: { service: string; userPath: string; reqId: string; requestUrl: URL },
+) {
+    const { service, userPath, reqId, requestUrl } = ctx;
+    const proxy = PROXIES[service];
+    if (!proxy) return createErrorResponse(404, `未找到服务 ${service}`, reqId);
+
+    const upstreamURL = buildUpstreamURL(
+        proxy.host,
+        proxy.basePath,
+        userPath,
+        requestUrl.search,
+    );
+    const forwardHeaders = buildForwardHeaders(req.headers, proxy);
+    forwardHeaders.set("X-Request-Id", reqId);
+
+    const effectiveTimeout = resolveEffectiveTimeout(service);
+    logDebug("准备发起流式请求", {
+        reqId,
+        upstreamURL,
+        timeout: effectiveTimeout,
+    });
+
     try {
-      const resp = await fetch(req.clone());
-      if (resp.status >= 500 && i < maxRetries) throw new Error(`服务器错误: ${resp.status}`);
-      return resp;
+        const response = await fetchWithRetry(
+            upstreamURL,
+            {
+                method: req.method,
+                headers: forwardHeaders,
+                body:
+                    req.method === "GET" || req.method === "HEAD"
+                        ? undefined
+                        : req.body,
+            },
+            {
+                retries: proxy.retryable ? 2 : 0,
+                retryableMethods: proxy.retryableMethods ?? [
+                    "GET",
+                    "HEAD",
+                    "OPTIONS",
+                    "POST",
+                ],
+                retryStatusCodes: RETRY_HTTP_CODES,
+                timeoutPerAttempt: effectiveTimeout,
+                baseDelay: 200,
+                maxDelay: 2000,
+                jitter: 0.25,
+                reqId,
+                label: service,
+            },
+        );
+
+        const limit = proxy.maxResponseSize ?? EDGE_MAX_RESPONSE_SIZE;
+        const contentLength = response.headers.get("content-length");
+        if (contentLength && Number(contentLength) > limit) {
+            logWarn("响应 Content-Length 超限", {
+                reqId,
+                limit,
+                contentLength,
+            });
+            return createErrorResponse(
+                413,
+                "响应体超过 Edge 允许的大小限制",
+                reqId,
+                { limit, content_length: Number(contentLength) },
+            );
+        }
+
+        const processedHeaders = processResponseHeaders(
+            response.headers,
+            reqId,
+        );
+        processedHeaders.set("X-Upstream-Status", `${response.status}`);
+
+        if (!response.body) {
+            return new Response(null, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: processedHeaders,
+            });
+        }
+
+        const limitedStream = enforceStreamLimit(response.body, limit, reqId);
+        return new Response(limitedStream, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: processedHeaders,
+        });
     } catch (err) {
-      lastErr = err;
-      if (i < maxRetries) {
-        const delay = Math.min(200 * 2 ** i, 5000) * (1 + (Math.random() - 0.5) * 0.3);
-        await new Promise(r => setTimeout(r, delay));
-      }
+        if (err instanceof SizeLimitExceededError) {
+            return createErrorResponse(
+                413,
+                "响应体超过 Edge 允许的大小限制",
+                reqId,
+                { limit: err.maxBytes, actual: err.actualBytes },
+            );
+        }
+        const { status, message } = categorizeError(err as Error);
+        logError("流式请求失败", { reqId, message, status, service });
+        return createErrorResponse(status, message, reqId, { service });
     }
-  }
-  throw lastErr;
-}
-function createSizeLimitedStream(maxSize: number, reqId: string) {
-  let total = 0;
-  return new TransformStream({
-    transform(chunk, controller) {
-      total += chunk.byteLength;
-      if (total > maxSize) {
-        controller.error(new Error("响应超限"));
-        return;
-      }
-      controller.enqueue(chunk);
-    }
-  });
-}
-function createCorsHeaders() {
-  const h = new Headers();
-  h.set("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  h.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  h.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, *");
-  h.set("Access-Control-Expose-Headers", "Content-Type, X-Request-Id");
-  return h;
-}
-function createErrorResponse(status: number, message: string, reqId: string, detail?: object) {
-  const body = { error: { message, type: "api_error", request_id: reqId }, status, ...detail };
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json", "X-Request-Id": reqId }
-  });
-}
-function buildForwardHeaders(clientHeaders: Headers, proxy: any) {
-  const headers = new Headers(proxy.defaultHeaders || {});
-  for (const [k, v] of clientHeaders.entries()) {
-    const lower = k.toLowerCase();
-    if (!BLACKLISTED_HEADERS.has(lower) && (ALLOWED_REQ_HEADERS.has(lower) || lower.startsWith("x-"))) {
-      headers.set(k, v);
-    }
-  }
-  headers.delete("accept-encoding");
-  return headers;
-}
-function processResponseHeaders(up: Headers, reqId: string) {
-  const h = new Headers(up);
-  const cors = createCorsHeaders();
-  for (const [k, v] of cors.entries()) h.set(k, v);
-  h.set("X-Request-Id", reqId);
-  h.delete("transfer-encoding");
-  h.delete("server");
-  return h;
 }
 
-// =================== 日志 ===================
-function log(level: "DEBUG" | "INFO" | "WARN" | "ERROR", msg: string, ctx?: any) {
-  const t = new Date().toISOString();
-  console.log(`[${t}][${ctx?.reqId || ""}][${level}] ${msg}`, ctx || "");
-}
-const logDebug = (m: string, c?: any) => log("DEBUG", m, c);
-const logInfo = (m: string, c?: any) => log("INFO", m, c);
-const logWarn = (m: string, c?: any) => log("WARN", m, c);
-const logError = (m: string, c?: any) => log("ERROR", m, c);
+export default async function handler(req: Request) {
+    if (req.method === "OPTIONS") {
+        return new Response(null, {
+            status: 204,
+            headers: createCorsHeaders(),
+        });
+    }
 
-logInfo("🚀 Gateway 启动完成", { services: Object.keys(PROXIES).length });
+    const url = new URL(req.url);
+    const reqId = getRequestId(req.headers);
+
+    const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (segments[0] !== "gateway")
+        return createErrorResponse(404, "未匹配到网关路径", reqId);
+    if (segments.length < 3)
+        return createErrorResponse(400, "缺少上游路径参数", reqId);
+
+    const service = segments[1];
+    const proxy = PROXIES[service];
+    if (!proxy)
+        return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+
+    const userPath = sanitizePath(segments.slice(2));
+    logInfo("Edge 收到请求", {
+        reqId,
+        method: req.method,
+        path: url.pathname,
+        service,
+        streamCheck: "pending",
+    });
+
+    const streamIntent = await detectStreamIntent(req);
+    logDebug("流式判定结果", { reqId, stream: streamIntent });
+
+    if (!streamIntent) {
+        return handoffToBackground(req, {
+            service,
+            userPath,
+            reqId,
+            requestUrl: url,
+        });
+    }
+
+    return handleStreamRequest(req, {
+        service,
+        userPath,
+        reqId,
+        requestUrl: url,
+    });
+}
