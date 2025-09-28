@@ -277,27 +277,33 @@ async function handoffToBackground(
     target: backgroundURL.toString(),
   });
 
-  const response = await fetch(backgroundURL.toString(), {
-    method: req.method,
-    headers: relayHeaders,
-    body: hasBody ? new Uint8Array(bodyBuffer!) : undefined,
-    cache: "no-store",
-  });
+  const response = await fetchWithRetry(
+    backgroundURL.toString(),
+    {
+      method: req.method,
+      headers: relayHeaders,
+      body: hasBody ? new Uint8Array(bodyBuffer!) : undefined,
+      cache: "no-store",
+    },
+    {
+      retries: 0,
+      retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"],
+      retryStatusCodes: RETRY_STATUS_CODES,
+      timeoutPerAttempt: resolveEdgeTimeout(service),
+      baseDelay: 100,
+      maxDelay: 200,
+      jitter: 0,
+      reqId,
+      label: "edge->background",
+    }
+  );
 
   const headersOut = processResponseHeaders(response.headers, reqId);
   headersOut.set("X-Background-Proxy", "1");
 
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    headersOut.set("Content-Length", String(buffer.byteLength));
-    return new Response(buffer, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: headersOut,
-    });
-  }
-
-  return new Response(response.body, {
+  const buffer = await response.arrayBuffer();
+  headersOut.set("Content-Length", String(buffer.byteLength));
+  return new Response(buffer, {
     status: response.status,
     statusText: response.statusText,
     headers: headersOut,
