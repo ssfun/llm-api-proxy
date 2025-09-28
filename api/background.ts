@@ -23,11 +23,6 @@ import {
     sanitizePath,
 } from "./config";
 
-export const config = {
-    runtime: "nodejs20.x",
-    maxDuration: 300,
-};
-
 const NODE_ATTEMPT_TIMEOUT = 290000;
 const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
 
