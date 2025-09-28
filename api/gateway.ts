@@ -47,18 +47,41 @@ function ensureAbsoluteURL(req: Request, headers: Headers) {
 function parseRoute(req: Request, headers: Headers): ParsedRoute | null {
   const url = ensureAbsoluteURL(req, headers);
 
+  const serviceParam = url.searchParams.get("service");
+  const pathParam = url.searchParams.get("path");
+  if (serviceParam) {
+    const cleaned = new URLSearchParams(url.searchParams);
+    cleaned.delete("service");
+    cleaned.delete("path");
+
+    const normalizedPath = pathParam
+      ? sanitizePath(decodeURIComponent(pathParam).split("/"))
+      : "";
+
+    return {
+      service: serviceParam,
+      userPath: normalizedPath,
+      search: cleaned.toString() ? `?${cleaned.toString()}` : "",
+      url,
+      originalPath: `/gateway/${serviceParam}/${normalizedPath}`,
+    };
+  }
+
   let pathname = url.pathname;
   if (pathname.startsWith("/api/")) pathname = pathname.slice(4);
 
   const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
-  if (segments[0] !== "gateway" || segments.length < 3) {
-    return null;
-  }
+  if (segments[0] !== "gateway" || segments.length < 3) return null;
 
   const service = segments[1];
   const userPath = sanitizePath(segments.slice(2));
-  const search = url.search;
-  return { service, userPath, search, url, originalPath: pathname };
+  return {
+    service,
+    userPath,
+    search: url.search,
+    url,
+    originalPath: pathname,
+  };
 }
 
 function resolveEdgeTimeout(service: string) {
