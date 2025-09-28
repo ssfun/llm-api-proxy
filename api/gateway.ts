@@ -25,10 +25,6 @@ import {
     SizeLimitExceededError,
 } from "./config";
 
-export const config = {
-    runtime: "edge",
-};
-
 const EDGE_FIRST_BYTE_LIMIT = 23000; // < 25s
 const EDGE_MAX_RESPONSE_SIZE = MAX_RESPONSE_SIZE;
 const RETRY_HTTP_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
