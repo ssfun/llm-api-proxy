@@ -13,7 +13,8 @@
   },
   "devDependencies": {
     "typescript": "^5.4.0",
-    "@vercel/node": "^3.0.0"
+    "@vercel/node": "^3.0.0",
+    "@vercel/edge": "^3.0.0"
   },
   "engines": {
     "node": "20.x"
