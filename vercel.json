@@ -1,22 +1,12 @@
 {
-  "version": 2,
-  "functions": {
-    "api/gateway.ts": {
-      "runtime": "edge"
-    },
-    "api/background.ts": {
-      "runtime": "nodejs18.x",
-      "maxDuration": 300
-    }
-  },
-  "routes": [
+  "rewrites": [
     {
-      "src": "^/gateway/.*$",
-      "dest": "/api/gateway.ts"
+      "source": "/gateway/:path*",
+      "destination": "/api/gateway"
     },
     {
-      "src": "^/background$",
-      "dest": "/api/background.ts"
+      "source": "/background",
+      "destination": "/api/background"
     }
   ]
 }
