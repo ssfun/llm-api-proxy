@@ -1,11 +1,6 @@
 {
-  "functions": {
-    "api/gateway.ts": {
-      "runtime": "edge"
-    },
-    "api/background.ts": {
-      "runtime": "nodejs20.x",
-      "maxDuration": 300
-    }
-  }
+  "builds": [
+    { "src": "api/gateway.ts", "use": "@vercel/edge" },
+    { "src": "api/background.ts", "use": "@vercel/node" }
+  ]
 }
