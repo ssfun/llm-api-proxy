@@ -24,12 +24,19 @@ import {
 const NODE_ATTEMPT_TIMEOUT = 290000;
 const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
 
+// 安全获取完整 URL
+function getFullUrl(request: Request): URL {
+  const urlString = request.url;
+  if (urlString.startsWith('http://') || urlString.startsWith('https://')) {
+    return new URL(urlString);
+  }
+  const host = request.headers.get('host') || request.headers.get('x-forwarded-host') || 'localhost';
+  const proto = request.headers.get('x-forwarded-proto') || 'https';
+  return new URL(urlString, `${proto}://${host}`);
+}
+
 function resolveParams(request: Request) {
-  // 修复：安全构造 URL
-  const url = request.url.startsWith('http')
-    ? new URL(request.url)
-    : new URL(request.url, `https://${request.headers.get('host') || 'localhost'}`);
-    
+  const url = getFullUrl(request);
   const headers = request.headers;
   const service = headers.get("x-gateway-target-service") ?? url.searchParams.get("service");
   const rawPath = headers.get("x-gateway-target-path") ?? url.searchParams.get("targetPath") ?? "";
@@ -52,49 +59,45 @@ async function readBody(response: Response) {
 }
 
 export default async function handler(request: Request): Promise<Response> {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: createCorsHeaders() });
-  }
-
-  const reqId = getRequestId(request.headers);
-  const { service, userPath, originalSearch } = resolveParams(request);
-  
-  if (!service) {
-    return createErrorResponse(400, "缺少目标服务标识", reqId);
-  }
-
-  const proxy = PROXIES[service];
-  if (!proxy) {
-    return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
-  }
-
-  // 修复：安全构造 URL
-  const requestUrl = request.url.startsWith('http')
-    ? new URL(request.url)
-    : new URL(request.url, `https://${request.headers.get('host') || 'localhost'}`);
-    
-  logInfo("Background 处理请求", {
-    reqId,
-    method: request.method,
-    path: userPath,
-    service,
-  });
-
-  const upstreamURL = buildUpstreamURL(
-    proxy.host,
-    proxy.basePath,
-    userPath,
-    originalSearch || requestUrl.search
-  );
-  
-  const forwardHeaders = buildForwardHeaders(request.headers, proxy);
-  forwardHeaders.set("X-Request-Id", reqId);
-  forwardHeaders.set("X-Background-Handler", "true");
-
-  const effectiveTimeout = Math.min(proxy.timeout ?? DEFAULT_TIMEOUT, NODE_ATTEMPT_TIMEOUT);
-  const retries = proxy.retryable ? 2 : 0;
-
   try {
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: createCorsHeaders() });
+    }
+
+    const reqId = getRequestId(request.headers);
+    const { service, userPath, originalSearch } = resolveParams(request);
+    
+    if (!service) {
+      return createErrorResponse(400, "缺少目标服务标识", reqId);
+    }
+
+    const proxy = PROXIES[service];
+    if (!proxy) {
+      return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+    }
+
+    const requestUrl = getFullUrl(request);
+    logInfo("Background 处理请求", {
+      reqId,
+      method: request.method,
+      path: userPath,
+      service,
+    });
+
+    const upstreamURL = buildUpstreamURL(
+      proxy.host,
+      proxy.basePath,
+      userPath,
+      originalSearch || requestUrl.search
+    );
+    
+    const forwardHeaders = buildForwardHeaders(request.headers, proxy);
+    forwardHeaders.set("X-Request-Id", reqId);
+    forwardHeaders.set("X-Background-Handler", "true");
+
+    const effectiveTimeout = Math.min(proxy.timeout ?? DEFAULT_TIMEOUT, NODE_ATTEMPT_TIMEOUT);
+    const retries = proxy.retryable ? 2 : 0;
+
     const response = await fetchWithRetry(
       upstreamURL,
       {
@@ -136,8 +139,9 @@ export default async function handler(request: Request): Promise<Response> {
       headers: processedHeaders,
     });
   } catch (err) {
+    const reqId = getRequestId(request.headers);
     const { status, message, type } = categorizeError(err as Error);
-    logError("Background 请求失败", { reqId, service, type, message, status });
-    return createErrorResponse(status, message, reqId, { service });
+    logError("Background 请求失败", { reqId, type, message, status });
+    return createErrorResponse(status, message, reqId);
   }
 }
