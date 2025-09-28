@@ -1,5 +1,5 @@
 /**
- * /api/config.ts
+ * /lib/config.ts
  *
  * @format
  */
