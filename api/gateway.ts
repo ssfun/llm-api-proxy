@@ -1,4 +1,6 @@
 /* /api/gateway.ts */
+export const runtime = 'edge';
+
 import {
   PROXIES,
   DEFAULT_TIMEOUT,
@@ -20,12 +22,10 @@ import {
   SizeLimitExceededError,
 } from "./config";
 
-export const runtime = 'edge';
-
-const EDGE_FIRST_BYTE_LIMIT = 23000; // < 25s
+const EDGE_FIRST_BYTE_LIMIT = 23000;
 const EDGE_MAX_RESPONSE_SIZE = MAX_RESPONSE_SIZE;
 const RETRY_HTTP_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
-const BACKGROUND_ENDPOINT = "/background";
+const BACKGROUND_ENDPOINT = "/api/background"; // 修正路径
 
 function resolveEffectiveTimeout(proxyKey: string) {
   const proxy = PROXIES[proxyKey];
@@ -50,7 +50,10 @@ async function detectStreamIntent(req: Request) {
   }
 }
 
-async function handoffToBackground(req: Request, ctx: { service: string; userPath: string; reqId: string; requestUrl: URL }) {
+async function handoffToBackground(
+  req: Request,
+  ctx: { service: string; userPath: string; reqId: string; requestUrl: URL }
+) {
   const { service, userPath, reqId, requestUrl } = ctx;
   const query = requestUrl.search ? requestUrl.search.slice(1) : "";
   const bodyBuffer = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
@@ -70,7 +73,11 @@ async function handoffToBackground(req: Request, ctx: { service: string; userPat
   });
 
   const processedHeaders = processResponseHeaders(response.headers, reqId);
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: processedHeaders });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: processedHeaders,
+  });
 }
 
 function enforceStreamLimit(stream: ReadableStream<Uint8Array>, limit: number, reqId: string) {
@@ -98,7 +105,10 @@ function enforceStreamLimit(stream: ReadableStream<Uint8Array>, limit: number, r
   });
 }
 
-async function handleStreamRequest(req: Request, ctx: { service: string; userPath: string; reqId: string; requestUrl: URL }) {
+async function handleStreamRequest(
+  req: Request,
+  ctx: { service: string; userPath: string; reqId: string; requestUrl: URL }
+) {
   const { service, userPath, reqId, requestUrl } = ctx;
   const proxy = PROXIES[service];
   if (!proxy) return createErrorResponse(404, `未找到服务 ${service}`, reqId);
@@ -113,7 +123,11 @@ async function handleStreamRequest(req: Request, ctx: { service: string; userPat
   try {
     const response = await fetchWithRetry(
       upstreamURL,
-      { method: req.method, headers: forwardHeaders, body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body },
+      {
+        method: req.method,
+        headers: forwardHeaders,
+        body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+      },
       {
         retries: proxy.retryable ? 2 : 0,
         retryableMethods: proxy.retryableMethods ?? ["GET", "HEAD", "OPTIONS", "POST"],
@@ -131,21 +145,35 @@ async function handleStreamRequest(req: Request, ctx: { service: string; userPat
     const contentLength = response.headers.get("content-length");
     if (contentLength && Number(contentLength) > limit) {
       logWarn("响应 Content-Length 超限", { reqId, limit, contentLength });
-      return createErrorResponse(413, "响应体超过 Edge 允许的大小限制", reqId, { limit, content_length: Number(contentLength) });
+      return createErrorResponse(413, "响应体超过 Edge 允许的大小限制", reqId, {
+        limit,
+        content_length: Number(contentLength),
+      });
     }
 
     const processedHeaders = processResponseHeaders(response.headers, reqId);
     processedHeaders.set("X-Upstream-Status", `${response.status}`);
 
     if (!response.body) {
-      return new Response(null, { status: response.status, statusText: response.statusText, headers: processedHeaders });
+      return new Response(null, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: processedHeaders,
+      });
     }
 
     const limitedStream = enforceStreamLimit(response.body, limit, reqId);
-    return new Response(limitedStream, { status: response.status, statusText: response.statusText, headers: processedHeaders });
+    return new Response(limitedStream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: processedHeaders,
+    });
   } catch (err) {
     if (err instanceof SizeLimitExceededError) {
-      return createErrorResponse(413, "响应体超过 Edge 允许的大小限制", reqId, { limit: err.maxBytes, actual: err.actualBytes });
+      return createErrorResponse(413, "响应体超过 Edge 允许的大小限制", reqId, {
+        limit: err.maxBytes,
+        actual: err.actualBytes,
+      });
     }
     const { status, message } = categorizeError(err as Error);
     logError("流式请求失败", { reqId, message, status, service });
@@ -158,19 +186,40 @@ export default async function handler(req: Request) {
     return new Response(null, { status: 204, headers: createCorsHeaders() });
   }
 
-  const url = new URL(req.url);
+  // 修复：确保构造完整的 URL
+  const url = req.url.startsWith('http') 
+    ? new URL(req.url)
+    : new URL(req.url, `https://${req.headers.get('host') || 'localhost'}`);
+  
   const reqId = getRequestId(req.headers);
 
-  const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
-  if (segments[0] !== "gateway") return createErrorResponse(404, "未匹配到网关路径", reqId);
-  if (segments.length < 3) return createErrorResponse(400, "缺少上游路径参数", reqId);
+  // 支持两种路径格式：
+  // 1. /api/gateway/service/path
+  // 2. /gateway/service/path
+  const pathname = url.pathname.replace(/^\/api\//, '/');
+  const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
+  
+  if (segments[0] !== "gateway") {
+    return createErrorResponse(404, "未匹配到网关路径", reqId);
+  }
+  if (segments.length < 3) {
+    return createErrorResponse(400, "缺少上游路径参数", reqId);
+  }
 
   const service = segments[1];
   const proxy = PROXIES[service];
-  if (!proxy) return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+  if (!proxy) {
+    return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+  }
 
   const userPath = sanitizePath(segments.slice(2));
-  logInfo("Edge 收到请求", { reqId, method: req.method, path: url.pathname, service, streamCheck: "pending" });
+  logInfo("Edge 收到请求", {
+    reqId,
+    method: req.method,
+    path: url.pathname,
+    service,
+    streamCheck: "pending",
+  });
 
   const streamIntent = await detectStreamIntent(req);
   logDebug("流式判定结果", { reqId, stream: streamIntent });
