@@ -259,6 +259,7 @@ async function handoffToBackground(
       "x-gateway-target-service": service,
       "x-gateway-target-path": userPath,
       "x-request-id": reqId,
+      "x-gateway-dispatcher": "edge",
     },
     hasBody
   );
@@ -266,7 +267,6 @@ async function handoffToBackground(
   if (search) {
     relayHeaders.set("x-gateway-target-query", search.startsWith("?") ? search.slice(1) : search);
   }
-  relayHeaders.set("x-gateway-dispatcher", "edge");
 
   const backgroundURL = new URL(BACKGROUND_PATH, url.origin);
   logInfo("Edge 分流至 Background", {
@@ -282,10 +282,12 @@ async function handoffToBackground(
     cache: "no-store",
   });
 
+  const responseBuffer = await response.arrayBuffer();
   const headersOut = processResponseHeaders(response.headers, reqId);
   headersOut.set("X-Background-Proxy", "1");
+  headersOut.set("Content-Length", `${responseBuffer.byteLength}`);
 
-  return new Response(response.body, {
+  return new Response(responseBuffer, {
     status: response.status,
     statusText: response.statusText,
     headers: headersOut,
