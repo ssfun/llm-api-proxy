@@ -1,8 +1,11 @@
 {
-  "rewrites": [
-    {
-      "source": "/gateway/:path*",
-      "destination": "/api"
+  "functions": {
+    "api/gateway.ts": {
+      "runtime": "edge"
+    },
+    "api/background.ts": {
+      "runtime": "nodejs20.x",
+      "maxDuration": 600
     }
-  ]
+  }
 }
