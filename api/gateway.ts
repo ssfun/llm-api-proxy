@@ -213,7 +213,9 @@ async function forwardViaEdge(
     headersOut.set("X-Upstream-Status", `${response.status}`);
 
     if (!response.body) {
-      return new Response(null, {
+      const buffer = await response.arrayBuffer();
+      headersOut.set("Content-Length", String(buffer.byteLength));
+      return new Response(buffer, {
         status: response.status,
         statusText: response.statusText,
         headers: headersOut,
@@ -282,12 +284,20 @@ async function handoffToBackground(
     cache: "no-store",
   });
 
-  const responseBuffer = await response.arrayBuffer();
   const headersOut = processResponseHeaders(response.headers, reqId);
   headersOut.set("X-Background-Proxy", "1");
-  headersOut.set("Content-Length", `${responseBuffer.byteLength}`);
 
-  return new Response(responseBuffer, {
+  if (!response.body) {
+    const buffer = await response.arrayBuffer();
+    headersOut.set("Content-Length", String(buffer.byteLength));
+    return new Response(buffer, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headersOut,
+    });
+  }
+
+  return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: headersOut,
