@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "functions": {
     "api/gateway.ts": {
       "runtime": "edge"
@@ -11,11 +12,11 @@
   "routes": [
     {
       "src": "^/gateway/.*$",
-      "dest": "api/gateway.ts"
+      "dest": "/api/gateway.ts"
     },
     {
       "src": "^/background$",
-      "dest": "api/background.ts"
+      "dest": "/api/background.ts"
     }
   ]
 }
