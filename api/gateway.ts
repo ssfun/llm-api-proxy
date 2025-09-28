@@ -277,37 +277,42 @@ async function handoffToBackground(
     target: backgroundURL.toString(),
   });
 
-  const response = await fetchWithRetry(
-    backgroundURL.toString(),
-    {
-      method: req.method,
-      headers: relayHeaders,
-      body: hasBody ? new Uint8Array(bodyBuffer!) : undefined,
-      cache: "no-store",
-    },
-    {
-      retries: 0,
-      retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"],
-      retryStatusCodes: RETRY_STATUS_CODES,
-      timeoutPerAttempt: resolveEdgeTimeout(service),
-      baseDelay: 100,
-      maxDelay: 200,
-      jitter: 0,
-      reqId,
-      label: "edge->background",
-    }
-  );
+  try {
+    const response = await fetchWithRetry(
+      backgroundURL.toString(),
+      {
+        method: req.method,
+        headers: relayHeaders,
+        body: hasBody ? new Uint8Array(bodyBuffer!) : undefined,
+        cache: "no-store",
+      },
+      {
+        retries: 0,
+        retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"],
+        retryStatusCodes: RETRY_STATUS_CODES,
+        timeoutPerAttempt: resolveEdgeTimeout(service),
+        baseDelay: 100,
+        maxDelay: 200,
+        jitter: 0,
+        reqId,
+        label: "edge->background",
+      }
+    );
 
-  const headersOut = processResponseHeaders(response.headers, reqId);
-  headersOut.set("X-Background-Proxy", "1");
+    const headersOut = processResponseHeaders(response.headers, reqId);
+    headersOut.set("X-Background-Proxy", "1");
 
-  const buffer = await response.arrayBuffer();
-  headersOut.set("Content-Length", String(buffer.byteLength));
-  return new Response(buffer, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: headersOut,
-  });
+    const buffer = await response.arrayBuffer();
+    return new Response(buffer, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headersOut,
+    });
+  } catch (err) {
+    const { status, message } = categorizeError(err as Error);
+    logError("Edge->Background 调用失败", { reqId, service, status, message });
+    return createErrorResponse(status, message, reqId, { service });
+  }
 }
 
 export default async function handler(req: Request) {
