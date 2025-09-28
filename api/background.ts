@@ -1,100 +1,170 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import fetch from "node-fetch";
-import { PROXIES } from "./config";
+/**
+ * /api/background.ts
+ *
+ * @format
+ */
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const reqId =
-    (req.headers["x-request-id"] as string) ||
-    (globalThis.crypto?.randomUUID?.() ?? Date.now().toString());
+import {
+    PROXIES,
+    DEFAULT_TIMEOUT,
+    MAX_RESPONSE_SIZE,
+    buildForwardHeaders,
+    buildUpstreamURL,
+    categorizeError,
+    createCorsHeaders,
+    createErrorResponse,
+    fetchWithRetry,
+    getRequestId,
+    logDebug,
+    logError,
+    logInfo,
+    logWarn,
+    processResponseHeaders,
+    sanitizePath,
+} from "./config";
 
-  const url = req.url || "";
-  const segments = url.replace(/^\/api\/background/, "").split("/").filter(Boolean);
+export const config = {
+    runtime: "nodejs20.x",
+    maxDuration: 300,
+};
 
-  if (segments.length < 2) {
-    return res.status(400).json({
-      error: "无效路径，格式: /api/background/{service}/{path}",
-      request_id: reqId,
-    });
-  }
+const NODE_ATTEMPT_TIMEOUT = 290000;
+const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
 
-  const [serviceAlias, ...pathParts] = segments;
-  const proxy = PROXIES[serviceAlias];
-  if (!proxy) {
-    return res.status(404).json({
-      error: `服务 '${serviceAlias}' 未找到`,
-      request_id: reqId,
-      available: Object.keys(PROXIES),
-    });
-  }
-
-  // 构造上游 URL
-  const cleanBase = proxy.basePath ? `/${proxy.basePath.replace(/^\/|\/$/g, "")}` : "";
-  const upstreamUrl =
-    `https://${proxy.host}${cleanBase}/${pathParts.join("/")}` +
-    (url.includes("?") ? url.substring(url.indexOf("?")) : "");
-
-  console.log(
-    `[Background] 路由请求: service=${serviceAlias} upstream=${upstreamUrl} reqId=${reqId}`
-  );
-
-  try {
-    const upstreamResp = await fetch(upstreamUrl, {
-      method: req.method,
-      headers: filterHeaders(req.headers as any, proxy),
-      body: ["GET", "HEAD"].includes(req.method!) ? undefined : tryStringify(req.body),
-    });
-
-    res.setHeader("X-Request-Id", String(reqId));
-
-    // JSON 响应
-    const ct = upstreamResp.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const data = await upstreamResp.json();
-      return res.status(upstreamResp.status).json(data);
-    }
-
-    // 非 JSON 响应 → 透传 buffer + headers
-    const buf = Buffer.from(await upstreamResp.arrayBuffer());
-    for (const [k, v] of upstreamResp.headers.entries()) {
-      res.setHeader(k, v);
-    }
-    return res.status(upstreamResp.status).end(buf);
-  } catch (err: any) {
-    console.error("[Background] 上游请求失败:", err);
-    return res.status(502).json({
-      error: { message: err.message || "网络错误" },
-      type: "NETWORK",
-      request_id: reqId,
-    });
-  }
+function resolveParams(request: Request) {
+    const url = new URL(request.url);
+    const headers = request.headers;
+    const service =
+        headers.get("x-gateway-target-service") ??
+        url.searchParams.get("service");
+    const rawPath =
+        headers.get("x-gateway-target-path") ??
+        url.searchParams.get("targetPath") ??
+        "";
+    const query =
+        headers.get("x-gateway-target-query") ??
+        url.searchParams.get("targetQuery") ??
+        "";
+    url.searchParams.delete("service");
+    url.searchParams.delete("targetPath");
+    url.searchParams.delete("targetQuery");
+    return {
+        service,
+        userPath: sanitizePath(rawPath.split("/")),
+        originalSearch: query ? `?${query}` : "",
+    };
 }
 
-// =================== 工具函数 ===================
-
-function filterHeaders(headers: Record<string, any>, proxy: any) {
-  const h: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    if (!v) continue;
-    const lower = k.toLowerCase();
-    if (
-      ["authorization", "content-type", "accept"].includes(lower) ||
-      lower.startsWith("x-")
-    ) {
-      h[k] = Array.isArray(v) ? v[0] : String(v);
-    }
-  }
-
-  // ⚠️ 不主动设置 user-agent，保持客户端/Node fetch 默认值
-  if (proxy.defaultHeaders) Object.assign(h, proxy.defaultHeaders);
-  return h;
+async function readBody(response: Response) {
+    const buffer = await response.arrayBuffer();
+    return { buffer, size: buffer.byteLength };
 }
 
-function tryStringify(body: any): string | undefined {
-  if (!body) return undefined;
-  if (typeof body === "string") return body;
-  try {
-    return JSON.stringify(body);
-  } catch {
-    return undefined;
-  }
+export default async function handler(request: Request): Promise<Response> {
+    if (request.method === "OPTIONS") {
+        return new Response(null, {
+            status: 204,
+            headers: createCorsHeaders(),
+        });
+    }
+
+    const reqId = getRequestId(request.headers);
+    const { service, userPath, originalSearch } = resolveParams(request);
+    if (!service) return createErrorResponse(400, "缺少目标服务标识", reqId);
+
+    const proxy = PROXIES[service];
+    if (!proxy)
+        return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+
+    const requestUrl = new URL(request.url);
+    logInfo("Background 处理请求", {
+        reqId,
+        method: request.method,
+        path: userPath,
+        service,
+    });
+
+    const upstreamURL = buildUpstreamURL(
+        proxy.host,
+        proxy.basePath,
+        userPath,
+        originalSearch || requestUrl.search,
+    );
+    const forwardHeaders = buildForwardHeaders(request.headers, proxy);
+    forwardHeaders.set("X-Request-Id", reqId);
+    forwardHeaders.set("X-Background-Handler", "true");
+
+    const effectiveTimeout = Math.min(
+        proxy.timeout ?? DEFAULT_TIMEOUT,
+        NODE_ATTEMPT_TIMEOUT,
+    );
+    const retries = proxy.retryable ? 2 : 0;
+
+    try {
+        const response = await fetchWithRetry(
+            upstreamURL,
+            {
+                method: request.method,
+                headers: forwardHeaders,
+                body:
+                    request.method === "GET" || request.method === "HEAD"
+                        ? undefined
+                        : request.body,
+            },
+            {
+                retries,
+                retryableMethods: proxy.retryableMethods ?? [
+                    "GET",
+                    "HEAD",
+                    "POST",
+                    "PUT",
+                    "OPTIONS",
+                ],
+                retryStatusCodes: RETRY_STATUS_CODES,
+                timeoutPerAttempt: effectiveTimeout,
+                baseDelay: 300,
+                maxDelay: 2500,
+                jitter: 0.3,
+                reqId,
+                label: `${service}-background`,
+            },
+        );
+
+        const limit = proxy.maxResponseSize ?? MAX_RESPONSE_SIZE;
+        const { buffer, size } = await readBody(response);
+        if (size > limit) {
+            logWarn("响应超出大小限制", { reqId, size, limit, service });
+            return createErrorResponse(413, "响应体超过允许的大小限制", reqId, {
+                limit,
+                actual: size,
+            });
+        }
+
+        const processedHeaders = processResponseHeaders(
+            response.headers,
+            reqId,
+        );
+        processedHeaders.set("X-Upstream-Status", `${response.status}`);
+        logDebug("Background 返回结果", {
+            reqId,
+            status: response.status,
+            size,
+        });
+
+        return new Response(buffer, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: processedHeaders,
+        });
+    } catch (err) {
+        const { status, message, type } = categorizeError(err as Error);
+        logError("Background 请求失败", {
+            reqId,
+            service,
+            type,
+            message,
+            status,
+        });
+        return createErrorResponse(status, message, reqId, { service });
+    }
 }
