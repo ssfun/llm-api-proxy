@@ -1,8 +1,9 @@
+// vercel.json
 {
   "rewrites": [
     {
-      "source": "/gateway/:path*",
-      "destination": "/api/gateway"
+      "source": "/gateway/:service/:path*",
+      "destination": "/api/gateway/:service/:path*"
     },
     {
       "source": "/background",
