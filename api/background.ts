@@ -1,4 +1,4 @@
-/* /api/background.ts */
+/* /api/background.ts - 更新 URL 处理部分 */
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
@@ -24,32 +24,37 @@ import {
 const NODE_ATTEMPT_TIMEOUT = 290000;
 const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
 
-// 安全获取完整 URL
-function getFullUrl(request: Request): URL {
-  const urlString = request.url;
-  if (urlString.startsWith('http://') || urlString.startsWith('https://')) {
-    return new URL(urlString);
+// 辅助函数：安全构造 URL
+function getFullURL(request: Request): URL {
+  const urlStr = request.url;
+  if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
+    return new URL(urlStr);
   }
-  const host = request.headers.get('host') || request.headers.get('x-forwarded-host') || 'localhost';
+  const host = request.headers.get('host') || 'localhost';
   const proto = request.headers.get('x-forwarded-proto') || 'https';
-  return new URL(urlString, `${proto}://${host}`);
+  return new URL(urlStr, `${proto}://${host}`);
 }
 
 function resolveParams(request: Request) {
-  const url = getFullUrl(request);
+  const url = getFullURL(request);
   const headers = request.headers;
+  
   const service = headers.get("x-gateway-target-service") ?? url.searchParams.get("service");
   const rawPath = headers.get("x-gateway-target-path") ?? url.searchParams.get("targetPath") ?? "";
   const query = headers.get("x-gateway-target-query") ?? url.searchParams.get("targetQuery") ?? "";
   
+  // 清理 URL 搜索参数
   url.searchParams.delete("service");
   url.searchParams.delete("targetPath");
   url.searchParams.delete("targetQuery");
+  url.searchParams.delete("path");
+  url.searchParams.delete("__vercel_path");
   
   return {
     service,
     userPath: sanitizePath(rawPath.split("/")),
     originalSearch: query ? `?${query}` : "",
+    cleanedUrl: url,
   };
 }
 
@@ -59,13 +64,14 @@ async function readBody(response: Response) {
 }
 
 export default async function handler(request: Request): Promise<Response> {
+  const reqId = getRequestId(request.headers);
+  
   try {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: createCorsHeaders() });
     }
 
-    const reqId = getRequestId(request.headers);
-    const { service, userPath, originalSearch } = resolveParams(request);
+    const { service, userPath, originalSearch, cleanedUrl } = resolveParams(request);
     
     if (!service) {
       return createErrorResponse(400, "缺少目标服务标识", reqId);
@@ -76,7 +82,6 @@ export default async function handler(request: Request): Promise<Response> {
       return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
     }
 
-    const requestUrl = getFullUrl(request);
     logInfo("Background 处理请求", {
       reqId,
       method: request.method,
@@ -88,7 +93,7 @@ export default async function handler(request: Request): Promise<Response> {
       proxy.host,
       proxy.basePath,
       userPath,
-      originalSearch || requestUrl.search
+      originalSearch || cleanedUrl.search
     );
     
     const forwardHeaders = buildForwardHeaders(request.headers, proxy);
@@ -139,9 +144,15 @@ export default async function handler(request: Request): Promise<Response> {
       headers: processedHeaders,
     });
   } catch (err) {
-    const reqId = getRequestId(request.headers);
     const { status, message, type } = categorizeError(err as Error);
-    logError("Background 请求失败", { reqId, type, message, status });
+    logError("Background 请求失败", { 
+      reqId, 
+      service: "unknown", 
+      type, 
+      message, 
+      status,
+      error: err instanceof Error ? err.message : String(err) 
+    });
     return createErrorResponse(status, message, reqId);
   }
 }
