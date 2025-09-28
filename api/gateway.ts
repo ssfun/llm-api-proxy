@@ -4,26 +4,6 @@
  * @format
  */
 
-import {
-    PROXIES,
-    DEFAULT_TIMEOUT,
-    MAX_RESPONSE_SIZE,
-    buildForwardHeaders,
-    buildUpstreamURL,
-    categorizeError,
-    createCorsHeaders,
-    createErrorResponse,
-    fetchWithRetry,
-    getRequestId,
-    isStreamRequested,
-    logDebug,
-    logError,
-    logInfo,
-    logWarn,
-    processResponseHeaders,
-    sanitizePath,
-    SizeLimitExceededError,
-} from "../lib/config";
 
 const EDGE_FIRST_BYTE_LIMIT = 23000; // < 25s
 const EDGE_MAX_RESPONSE_SIZE = MAX_RESPONSE_SIZE;
