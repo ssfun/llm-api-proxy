@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/gateway/:service/:path*",
-      "destination": "/api/gateway/:service/:path*"
+      "destination": "/api/gateway?service=:service&path=:path*"
     },
     {
       "source": "/background",
