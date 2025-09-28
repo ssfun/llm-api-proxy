@@ -25,7 +25,7 @@ import {
 const EDGE_FIRST_BYTE_LIMIT = 23000;
 const EDGE_MAX_RESPONSE_SIZE = MAX_RESPONSE_SIZE;
 const RETRY_HTTP_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
-const BACKGROUND_ENDPOINT = "/api/background"; // 修正路径
+const BACKGROUND_ENDPOINT = "/api/background";
 
 function resolveEffectiveTimeout(proxyKey: string) {
   const proxy = PROXIES[proxyKey];
@@ -48,6 +48,24 @@ async function detectStreamIntent(req: Request) {
   } catch {
     return isStreamRequested(req);
   }
+}
+
+// 安全获取完整 URL
+function getFullUrl(request: Request): URL {
+  // Edge Runtime 中，request.url 可能只是路径
+  const urlString = request.url;
+  
+  // 如果已经是完整 URL，直接使用
+  if (urlString.startsWith('http://') || urlString.startsWith('https://')) {
+    return new URL(urlString);
+  }
+  
+  // 否则，从 headers 构造完整 URL
+  const host = request.headers.get('host') || request.headers.get('x-forwarded-host') || 'localhost';
+  const proto = request.headers.get('x-forwarded-proto') || 'https';
+  
+  // 构造完整 URL
+  return new URL(urlString, `${proto}://${host}`);
 }
 
 async function handoffToBackground(
@@ -182,51 +200,78 @@ async function handleStreamRequest(
 }
 
 export default async function handler(req: Request) {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: createCorsHeaders() });
+  try {
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: createCorsHeaders() });
+    }
+
+    // 使用安全的 URL 获取方法
+    const url = getFullUrl(req);
+    const reqId = getRequestId(req.headers);
+
+    // 处理路径，支持 /api/gateway 和 /gateway
+    const pathname = url.pathname;
+    const pathWithoutApi = pathname.replace(/^\/api\//, '/');
+    const segments = pathWithoutApi.replace(/^\/+|\/+$/g, "").split("/");
+    
+    // 记录调试信息
+    logDebug("请求路径解析", {
+      reqId,
+      originalUrl: req.url,
+      pathname,
+      pathWithoutApi,
+      segments: segments.join('/'),
+    });
+
+    if (segments[0] !== "gateway") {
+      return createErrorResponse(404, "未匹配到网关路径", reqId, {
+        receivedPath: pathname,
+        expectedPrefix: "/gateway",
+      });
+    }
+
+    if (segments.length < 3) {
+      return createErrorResponse(400, "缺少上游路径参数", reqId, {
+        hint: "路径格式应为: /gateway/{service}/{path}",
+        receivedSegments: segments.length,
+      });
+    }
+
+    const service = segments[1];
+    const proxy = PROXIES[service];
+    if (!proxy) {
+      return createErrorResponse(404, `服务 ${service} 未配置`, reqId, {
+        availableServices: Object.keys(PROXIES),
+      });
+    }
+
+    const userPath = sanitizePath(segments.slice(2));
+    logInfo("Edge 收到请求", {
+      reqId,
+      method: req.method,
+      path: pathname,
+      service,
+      userPath,
+      streamCheck: "pending",
+    });
+
+    const streamIntent = await detectStreamIntent(req);
+    logDebug("流式判定结果", { reqId, stream: streamIntent });
+
+    if (!streamIntent) {
+      return handoffToBackground(req, { service, userPath, reqId, requestUrl: url });
+    }
+
+    return handleStreamRequest(req, { service, userPath, reqId, requestUrl: url });
+  } catch (error) {
+    const reqId = getRequestId(req.headers);
+    logError("处理请求时发生错误", {
+      reqId,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    return createErrorResponse(500, "内部服务器错误", reqId, {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
-
-  // 修复：确保构造完整的 URL
-  const url = req.url.startsWith('http') 
-    ? new URL(req.url)
-    : new URL(req.url, `https://${req.headers.get('host') || 'localhost'}`);
-  
-  const reqId = getRequestId(req.headers);
-
-  // 支持两种路径格式：
-  // 1. /api/gateway/service/path
-  // 2. /gateway/service/path
-  const pathname = url.pathname.replace(/^\/api\//, '/');
-  const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
-  
-  if (segments[0] !== "gateway") {
-    return createErrorResponse(404, "未匹配到网关路径", reqId);
-  }
-  if (segments.length < 3) {
-    return createErrorResponse(400, "缺少上游路径参数", reqId);
-  }
-
-  const service = segments[1];
-  const proxy = PROXIES[service];
-  if (!proxy) {
-    return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
-  }
-
-  const userPath = sanitizePath(segments.slice(2));
-  logInfo("Edge 收到请求", {
-    reqId,
-    method: req.method,
-    path: url.pathname,
-    service,
-    streamCheck: "pending",
-  });
-
-  const streamIntent = await detectStreamIntent(req);
-  logDebug("流式判定结果", { reqId, stream: streamIntent });
-
-  if (!streamIntent) {
-    return handoffToBackground(req, { service, userPath, reqId, requestUrl: url });
-  }
-
-  return handleStreamRequest(req, { service, userPath, reqId, requestUrl: url });
 }
