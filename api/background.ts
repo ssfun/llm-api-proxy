@@ -1,4 +1,4 @@
-/* /api/background.ts - 更新 URL 处理部分 */
+/* /api/background.ts */
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
@@ -24,37 +24,35 @@ import {
 const NODE_ATTEMPT_TIMEOUT = 290000;
 const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
 
-// 辅助函数：安全构造 URL
-function getFullURL(request: Request): URL {
-  const urlStr = request.url;
-  if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
-    return new URL(urlStr);
-  }
-  const host = request.headers.get('host') || 'localhost';
-  const proto = request.headers.get('x-forwarded-proto') || 'https';
-  return new URL(urlStr, `${proto}://${host}`);
-}
-
 function resolveParams(request: Request) {
-  const url = getFullURL(request);
   const headers = request.headers;
   
-  const service = headers.get("x-gateway-target-service") ?? url.searchParams.get("service");
-  const rawPath = headers.get("x-gateway-target-path") ?? url.searchParams.get("targetPath") ?? "";
-  const query = headers.get("x-gateway-target-query") ?? url.searchParams.get("targetQuery") ?? "";
+  // 从 headers 中获取参数（Edge Gateway 传递过来的）
+  const service = headers.get("x-gateway-target-service");
+  const rawPath = headers.get("x-gateway-target-path") ?? "";
+  const query = headers.get("x-gateway-target-query") ?? "";
   
-  // 清理 URL 搜索参数
-  url.searchParams.delete("service");
-  url.searchParams.delete("targetPath");
-  url.searchParams.delete("targetQuery");
-  url.searchParams.delete("path");
-  url.searchParams.delete("__vercel_path");
+  if (!service) {
+    // 如果不是从 Edge 传递的，尝试从 URL 解析
+    try {
+      const url = request.url.startsWith('http')
+        ? new URL(request.url)
+        : new URL(request.url, `https://${headers.get('host') || 'localhost'}`);
+      
+      return {
+        service: url.searchParams.get("service"),
+        userPath: sanitizePath((url.searchParams.get("targetPath") ?? "").split("/")),
+        originalSearch: url.searchParams.get("targetQuery") ? `?${url.searchParams.get("targetQuery")}` : "",
+      };
+    } catch {
+      return { service: null, userPath: "", originalSearch: "" };
+    }
+  }
   
   return {
     service,
     userPath: sanitizePath(rawPath.split("/")),
     originalSearch: query ? `?${query}` : "",
-    cleanedUrl: url,
   };
 }
 
@@ -64,45 +62,44 @@ async function readBody(response: Response) {
 }
 
 export default async function handler(request: Request): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: createCorsHeaders() });
+  }
+
   const reqId = getRequestId(request.headers);
+  const { service, userPath, originalSearch } = resolveParams(request);
   
+  if (!service) {
+    return createErrorResponse(400, "缺少目标服务标识", reqId);
+  }
+
+  const proxy = PROXIES[service];
+  if (!proxy) {
+    return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
+  }
+
+  logInfo("Background 处理请求", {
+    reqId,
+    method: request.method,
+    service,
+    path: userPath,
+  });
+
+  const upstreamURL = buildUpstreamURL(
+    proxy.host,
+    proxy.basePath,
+    userPath,
+    originalSearch
+  );
+  
+  const forwardHeaders = buildForwardHeaders(request.headers, proxy);
+  forwardHeaders.set("X-Request-Id", reqId);
+  forwardHeaders.set("X-Background-Handler", "true");
+
+  const effectiveTimeout = Math.min(proxy.timeout ?? DEFAULT_TIMEOUT, NODE_ATTEMPT_TIMEOUT);
+  const retries = proxy.retryable ? 2 : 0;
+
   try {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: createCorsHeaders() });
-    }
-
-    const { service, userPath, originalSearch, cleanedUrl } = resolveParams(request);
-    
-    if (!service) {
-      return createErrorResponse(400, "缺少目标服务标识", reqId);
-    }
-
-    const proxy = PROXIES[service];
-    if (!proxy) {
-      return createErrorResponse(404, `服务 ${service} 未配置`, reqId);
-    }
-
-    logInfo("Background 处理请求", {
-      reqId,
-      method: request.method,
-      path: userPath,
-      service,
-    });
-
-    const upstreamURL = buildUpstreamURL(
-      proxy.host,
-      proxy.basePath,
-      userPath,
-      originalSearch || cleanedUrl.search
-    );
-    
-    const forwardHeaders = buildForwardHeaders(request.headers, proxy);
-    forwardHeaders.set("X-Request-Id", reqId);
-    forwardHeaders.set("X-Background-Handler", "true");
-
-    const effectiveTimeout = Math.min(proxy.timeout ?? DEFAULT_TIMEOUT, NODE_ATTEMPT_TIMEOUT);
-    const retries = proxy.retryable ? 2 : 0;
-
     const response = await fetchWithRetry(
       upstreamURL,
       {
@@ -145,14 +142,7 @@ export default async function handler(request: Request): Promise<Response> {
     });
   } catch (err) {
     const { status, message, type } = categorizeError(err as Error);
-    logError("Background 请求失败", { 
-      reqId, 
-      service: "unknown", 
-      type, 
-      message, 
-      status,
-      error: err instanceof Error ? err.message : String(err) 
-    });
-    return createErrorResponse(status, message, reqId);
+    logError("Background 请求失败", { reqId, service, type, message, status });
+    return createErrorResponse(status, message, reqId, { service });
   }
 }
