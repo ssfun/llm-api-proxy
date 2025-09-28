@@ -21,7 +21,7 @@ import {
     logWarn,
     processResponseHeaders,
     sanitizePath,
-} from "./lib/config";
+} from "../lib/config";
 
 const NODE_ATTEMPT_TIMEOUT = 290000;
 const RETRY_STATUS_CODES = [408, 409, 425, 429, 500, 502, 503, 504];
