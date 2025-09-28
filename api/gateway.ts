@@ -23,7 +23,7 @@ import {
     processResponseHeaders,
     sanitizePath,
     SizeLimitExceededError,
-} from "./lib/config";
+} from "../lib/config";
 
 const EDGE_FIRST_BYTE_LIMIT = 23000; // < 25s
 const EDGE_MAX_RESPONSE_SIZE = MAX_RESPONSE_SIZE;
