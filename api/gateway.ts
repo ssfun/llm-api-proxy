@@ -290,7 +290,7 @@ async function handoffToBackground(
         retries: 0,
         retryableMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"],
         retryStatusCodes: RETRY_STATUS_CODES,
-        timeoutPerAttempt: resolveEdgeTimeout(service),
+        timeoutPerAttempt: (PROXIES[service]?.timeout ?? DEFAULT_TIMEOUT),
         baseDelay: 100,
         maxDelay: 200,
         jitter: 0,
